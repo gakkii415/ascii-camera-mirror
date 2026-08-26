@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>ASCII Camera Mirror</title>
+<style>
+  :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050608;color:#fff}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#050608}
+  canvas{width:100%;height:100%;display:block;image-rendering:auto}
+  video{display:none}
+  .top{position:fixed;top:max(12px,env(safe-area-inset-top));left:12px;right:12px;display:flex;gap:8px;align-items:center;z-index:5}
+  .brand{background:#0d1015d9;border:1px solid #ffffff1c;border-radius:14px;padding:10px 12px;font-weight:700;backdrop-filter:blur(16px);white-space:nowrap}
+  .actions{margin-left:auto;display:flex;gap:8px}
+  button{appearance:none;border:1px solid #ffffff24;background:#0d1015dc;color:#fff;border-radius:12px;padding:10px 12px;font-weight:650;font-size:14px;backdrop-filter:blur(16px)}
+  button:active{transform:scale(.97)}
+  .bottom{position:fixed;left:12px;right:12px;bottom:max(14px,env(safe-area-inset-bottom));z-index:5;background:#0d1015d9;border:1px solid #ffffff1c;border-radius:16px;padding:12px;backdrop-filter:blur(16px);display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center}
+  label{font-size:12px;color:#d5d8df} input[type=range]{width:100%}
+  .status{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:4;text-align:center;max-width:78%;color:#dce0e8}
+  .status button{margin-top:12px;font-size:16px;padding:12px 16px}
+  .version{position:fixed;right:10px;bottom:4px;font-size:10px;color:#ffffff55;z-index:6;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="out"></canvas><video id="video" autoplay muted playsinline></video></div>
+<div class="top"><div class="brand">ASCII Camera Mirror</div><div class="actions"><button id="flip">反転</button><button id="camera">前/後</button></div></div>
+<div class="status" id="status"><div>カメラ映像をリアルタイムでASCII文字に変換します。</div><button id="start">カメラを開始</button></div>
+<div class="bottom"><label>細かさ</label><input id="density" type="range" min="5" max="13" step="1" value="8"><button id="style">文字: 標準</button></div>
+<div class="version">v1</div>
+<script>
+(() => {
+  const video=document.getElementById('video');
+  const out=document.getElementById('out');
+  const ctx=out.getContext('2d',{alpha:false});
+  const status=document.getElementById('status');
+  const startBtn=document.getElementById('start');
+  const flipBtn=document.getElementById('flip');
+  const camBtn=document.getElementById('camera');
+  const density=document.getElementById('density');
+  const styleBtn=document.getElementById('style');
+  const sample=document.createElement('canvas');
+  const sctx=sample.getContext('2d',{willReadFrequently:true});
+  const styles=[
+    {name:'標準',chars:'@%#*+=-:. '},
+    {name:'密集',chars:'@$B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`\'. '},
+    {name:'Matrix',chars:'01▓▒░  '},
+    {name:'記号',chars:'@#$%&*+=:. '}
+  ];
+  let styleIndex=0, stream=null, facing='user', mirrored=true, running=false, raf=0;
+
+  function resize(){
+    const dpr=Math.min(devicePixelRatio||1,2);
+    out.width=Math.round(innerWidth*dpr);out.height=Math.round(innerHeight*dpr);
+    out.style.width=innerWidth+'px';out.style.height=innerHeight+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  addEventListener('resize',resize,{passive:true});resize();
+
+  async function stop(){
+    if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
+    running=false;cancelAnimationFrame(raf);
+  }
+  async function startCamera(){
+    try{
+      await stop();
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720}},audio:false});
+      video.srcObject=stream;await video.play();running=true;status.style.display='none';render();
+    }catch(e){status.style.display='block';status.innerHTML='<div>カメラを開けませんでした。Safariのカメラ権限を確認してください。</div><button id="retry">もう一度</button>';document.getElementById('retry').onclick=startCamera}
+  }
+  startBtn.onclick=startCamera;
+  camBtn.onclick=async()=>{facing=facing==='user'?'environment':'user';mirrored=facing==='user';await startCamera()};
+  flipBtn.onclick=()=>{mirrored=!mirrored};
+  styleBtn.onclick=()=>{styleIndex=(styleIndex+1)%styles.length;styleBtn.textContent='文字: '+styles[styleIndex].name};
+
+  function render(){
+    if(!running){return}
+    const vw=video.videoWidth||640,vh=video.videoHeight||480;
+    const cell=Number(density.value);
+    const fontSize=cell+1;
+    const cols=Math.max(36,Math.floor(innerWidth/cell));
+    const aspect=(vh/vw)*(innerWidth/innerHeight);
+    const rows=Math.max(28,Math.floor((innerHeight/fontSize)*.95));
+    sample.width=cols;sample.height=rows;
+    sctx.save();
+    if(mirrored){sctx.translate(cols,0);sctx.scale(-1,1)}
+    const videoAspect=vw/vh,targetAspect=cols/rows;
+    let sx=0,sy=0,sw=vw,sh=vh;
+    if(videoAspect>targetAspect){sw=vh*targetAspect;sx=(vw-sw)/2}else{sh=vw/targetAspect;sy=(vh-sh)/2}
+    sctx.drawImage(video,sx,sy,sw,sh,0,0,cols,rows);sctx.restore();
+    const data=sctx.getImageData(0,0,cols,rows).data;
+    ctx.fillStyle='#050608';ctx.fillRect(0,0,innerWidth,innerHeight);
+    ctx.font=`${fontSize}px ui-monospace,SFMono-Regular,Menlo,Monaco,monospace`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    const chars=styles[styleIndex].chars;
+    const xStep=innerWidth/cols,yStep=innerHeight/rows;
+    for(let y=0;y<rows;y++){
+      for(let x=0;x<cols;x++){
+        const i=(y*cols+x)*4,r=data[i],g=data[i+1],b=data[i+2];
+        const lum=.2126*r+.7152*g+.0722*b;
+        const ci=Math.min(chars.length-1,Math.floor((lum/255)*(chars.length-1)));
+        const ch=chars[chars.length-1-ci];
+        if(ch===' ')continue;
+        const sat=Math.max(r,g,b)-Math.min(r,g,b);
+        if(styleIndex===2){ctx.fillStyle=`rgb(${Math.max(20,g*.25)},${Math.max(90,g)},${Math.max(25,b*.18)})`}
+        else if(sat>18){ctx.fillStyle=`rgb(${Math.min(255,r*1.08)},${Math.min(255,g*1.08)},${Math.min(255,b*1.08)})`}
+        else{const v=Math.max(70,lum);ctx.fillStyle=`rgb(${v},${v},${v})`}
+        ctx.fillText(ch,(x+.5)*xStep,(y+.5)*yStep);
+      }
+    }
+    raf=requestAnimationFrame(render);
+  }
+})();
+</script>
+</body>
+</html>
